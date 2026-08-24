@@ -34,6 +34,16 @@ const CLIS: Array<{ id: AgentProvider; label: string; hint: string }> = [
   { id: 'qwen', label: 'Qwen', hint: 'OpenAI-compatible endpoint — used as the proxy upstream' }
 ];
 
+// OmniRoute gateway is configured the same way as a per-engine base-URL (it is an
+// OpenAI-compatible endpoint keyed under `providerBaseUrls.omniroute`, read in
+// spawnAgentCore). It is surfaced here as an extra row even though `omniroute` is
+// not itself a spawnable AgentProvider.
+const OMNIROUTE_ROW: { key: string; label: string; hint: string } = {
+  key: 'omniroute',
+  label: 'OmniRoute Gateway',
+  hint: 'http://localhost:20128/v1 (OpenAI-compatible, no auth) — OpenCode oc/* & auto/* slugs route here'
+};
+
 const inputStyle: CSSProperties = {
   width: '100%',
   padding: '6px 8px 4px',
@@ -118,6 +128,12 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
     setBaseUrls(next);
     try { await window.cth.updateConfig({ providerBaseUrls: next }); } catch { /* noop */ }
   };
+  // OmniRoute gateway shares the providerBaseUrls map but under a non-provider key.
+  const saveOmniBaseUrl = async (value: string) => {
+    const next = { ...baseUrls, omniroute: value.trim() || undefined };
+    setBaseUrls(next);
+    try { await window.cth.updateConfig({ providerBaseUrls: next as Partial<Record<AgentProvider, string>> }); } catch { /* noop */ }
+  };
   const saveModel = async (id: AgentProvider, value: string) => {
     const next = { ...models, [id]: value.trim() || undefined };
     setModels(next);
@@ -200,6 +216,22 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
             onClick={(e) => { e.preventDefault(); void window.cth.openExternal(OSS_BLOG_LINKS.macMini); }}
             style={linkStyle}
           >set it up on a Mac Mini</a>.
+        </div>
+      </div>
+
+      {/* OmniRoute gateway config (OpenAI-compatible, no auth) — OpenCode oc/* &
+          auto/* slugs route here when selected. Not itself a spawnable engine. */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {OMNIROUTE_ROW.label}
+        </label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            placeholder={`base-URL — ${OMNIROUTE_ROW.hint}`}
+            defaultValue={(baseUrls as Record<string, string | undefined>).omniroute ?? ''}
+            onBlur={(e) => void saveOmniBaseUrl(e.target.value)}
+            style={inputStyle}
+          />
         </div>
       </div>
 

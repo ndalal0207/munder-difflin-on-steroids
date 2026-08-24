@@ -58,13 +58,16 @@ import { CostLedgerTotals } from './costLifetime';
 import { analytics } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
+import { checkInstantFailover, failoverStalledTasks } from './failover';
+import { buildAutoSpawnParams } from './autoSpawn';
+import { describeImage, isImageFile } from './visionBridge';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
-import { fetchHireManifest, readHireManifestFiles } from './hire';
+import { fetchHireManifest, readHireManifestFiles, scanGlobalClaudeAgents } from './hire';
 import { parseHireDeepLink, type HireManifest } from '../shared/hire';
 import { ClosingTimeController } from './closingTime';
 import {
@@ -74,7 +77,8 @@ import {
   nonInteractiveEnvForProvider,
   providerPreset,
   installInfoForProvider,
-  type AgentProvider
+  type AgentProvider,
+  type OpenCodeConfigV2
 } from '../shared/agentProvider';
 import { buildMissingCliScript, chooseInstallRung } from './cliInstall';
 import { detectNodeVersion, nodeIsUsable, resolveNodeInstaller } from './nodeInstall';
@@ -1173,16 +1177,30 @@ function runBreakerBeat(progressWindowMs: number): void {
     const name = reg.agents[d.state.agentId]?.name ?? d.state.agentId;
     const reason = d.state.reason;
     if (d.action === 'steer') {
-      hive.send({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: steer',
-        body: `Automated guardrail: ${reason}. Re-check your approach — if you're looping or stuck, STOP repeating, summarize what you've tried, and ask god for direction.` }, 'breaker');
+      hive.send({
+        to: d.state.agentId, act: 'request', subject: 'Circuit breaker: steer',
+        body: `Automated guardrail: ${reason}. Re-check your approach — if you're looping or stuck, STOP repeating, summarize what you've tried, and ask god for direction.`
+      }, 'breaker');
     } else if (d.action === 'constrain') {
-      hive.send({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: constrain',
-        body: `Automated guardrail escalated: ${reason}. Stop active work now: switch to read-only/plan, write a short plan of your next step, and send it to god for sign-off BEFORE running more tools.` }, 'breaker');
+      hive.send({
+        to: d.state.agentId, act: 'request', subject: 'Circuit breaker: constrain',
+        body: `Automated guardrail escalated: ${reason}. Stop active work now: switch to read-only/plan, write a short plan of your next step, and send it to god for sign-off BEFORE running more tools.`
+      }, 'breaker');
       breakerToast(`${name} constrained`, reason);
     } else if (d.action === 'stop') {
       const ptyId = ptyForAgent(d.state.agentId);
       if (ptyId) { try { ptyManager.kill(ptyId); } catch { /* already gone */ } teardownPty(ptyId); }
       breakerToast(`${name} stopped by circuit breaker`, reason);
+      failoverStalledTasks({
+        hive,
+        failedAgentId: d.state.agentId,
+        failedAgentName: name,
+        reason,
+        breakerLevels: (aid) => breaker.levelFor(aid),
+        livePtyAgentIds: new Set(ptyToAgent.values()),
+        worktreePaths,
+        notifyToast: breakerToast
+      });
     }
   }
 }
@@ -1421,8 +1439,10 @@ function downloadSlackFile(
     if (urlObj.protocol !== 'https:') { resolve(null); return; }
 
     const req = httpsRequest(
-      { hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, method: 'GET',
-        headers: { authorization: `Bearer ${botToken}` } },
+      {
+        hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, method: 'GET',
+        headers: { authorization: `Bearer ${botToken}` }
+      },
       (res) => {
         if (res.statusCode && res.statusCode >= 400) {
           res.resume(); // drain response body
@@ -2181,8 +2201,11 @@ ipcMain.handle('hire:drainPending', () => {
 // is validated independently; valid neighbours survive an invalid manifest.
 ipcMain.handle('hire:openFile', async () => {
   const res = await dialog.showOpenDialog({
-    title: 'Import hire manifests',
-    filters: [{ name: 'Hire manifest', extensions: ['json'] }],
+    title: 'Import hire manifests & agent personas',
+    filters: [
+      { name: 'Hire manifests & Personas', extensions: ['json', 'md', 'markdown'] },
+      { name: 'All files', extensions: ['*'] }
+    ],
     properties: ['openFile', 'multiSelections']
   });
   if (res.canceled || res.filePaths.length === 0) {
@@ -2194,6 +2217,35 @@ ipcMain.handle('hire:openFile', async () => {
     ...batch,
     error: batch.manifests.length === 0 ? 'no valid hire manifests selected' : undefined
   };
+});
+
+// IPC: discover custom Claude agents in ~/.claude/agents and project .claude/agents
+ipcMain.handle('hire:listGlobalClaudeAgents', async (_evt, projectCwd: unknown) => {
+  return scanGlobalClaudeAgents(typeof projectCwd === 'string' ? projectCwd : undefined);
+});
+
+// IPC: autonomous parallel worker auto-spawner
+ipcMain.handle('hive:autoSpawn', async (_evt, opts: { role: string; goal: string; cwd: string }) => {
+  if (!opts || !opts.role || !opts.cwd) return { ok: false, error: 'invalid autoSpawn parameters' };
+  const params = buildAutoSpawnParams(opts);
+  const spawnOpts = {
+    id: params.id,
+    name: params.name,
+    character: params.character,
+    accent: params.accent,
+    command: 'claude',
+    cwd: opts.cwd,
+    isolate: params.isolate,
+    hive: {
+      id: params.id,
+      name: params.name,
+      cwd: opts.cwd,
+      role: params.role,
+      goal: params.goal,
+      persona: params.persona
+    }
+  };
+  return spawnAgentCore(spawnOpts, null);
 });
 
 /**
@@ -2534,6 +2586,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   const claudeProvider = isClaudeProvider(provider);
   opts.provider = provider;
   if (opts.hive) opts.hive = { ...opts.hive, provider };
+
+  // Normalize model args for local providers (e.g. OpenCode requires local/ prefix on bare model names)
+  if (opts.args && (provider === 'opencode' || provider === 'crush' || provider === 'pi')) {
+    for (let i = 0; i < opts.args.length; i++) {
+      if (opts.args[i] === '--model' && opts.args[i + 1] && !opts.args[i + 1].includes('/')) {
+        const prefix = provider === 'opencode' ? 'local/' : 'ollama/';
+        opts.args[i + 1] = `${prefix}${opts.args[i + 1]}`;
+      }
+    }
+  }
   // ── Missing engine CLI → run its installer visibly (pre-spawn) ───────────────
   // If the agent's engine binary (claude/codex/…) isn't installed, spawning it
   // just dies with "— process exited (code 1) —" and the user has no idea why.
@@ -2861,23 +2923,134 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // 3) OpenCode's auto-approve + local provider live in its single config-injection
     //    env var, built dynamically so permission:allow is GATED on autoMode (#2).
     if (provider === 'opencode') {
-      const oc: Record<string, unknown> = { autoupdate: false };
-      if (cfg.autoMode) oc.permission = { edit: 'allow', bash: 'allow', webfetch: 'allow' };
-      const baseUrl = cfg.providerBaseUrls?.opencode;
-      if (baseUrl) {
-        // Register the model id the user actually selects (the part after 'local/')
-        // so `--model local/<id>` resolves; default to 'local'. Without this the
-        // dropdown's `local/llama3` failed against a config that only declared model
-        // 'local' (Jim verify-opencode MUST-FIX #2).
-        const localModel = (prefix === 'local' && modelSlug.slice(6)) || 'local';
-        oc.provider = {
-          local: { npm: '@ai-sdk/openai-compatible', name: 'Local (self-hosted)', options: { baseURL: baseUrl }, models: { [localModel]: { name: localModel } } }
-        };
+      const ocDir = opts.env?.OPENCODE_CONFIG_DIR || join(opts.cwd, '.opencode');
+      try { mkdirSync(ocDir, { recursive: true }); } catch { /* best effort */ }
+      extra.OPENCODE_CONFIG_DIR = ocDir;
+
+      const baseUrl = cfg.providerBaseUrls?.opencode || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434/v1';
+      const omniBaseUrl = (cfg.providerBaseUrls as Record<string, string> | undefined)?.omniroute || process.env.OMNIROUTE_HOST || 'http://127.0.0.1:20128/v1';
+      const rawModel = (opts.args ?? []).find((_, idx, arr) => arr[idx - 1] === '--model') || '';
+      const modelName = rawModel.includes('/') ? rawModel.split('/')[1] : rawModel || 'qwen2.5vl:3b';
+      // A selected gateway slug (oc/*, auto/*, veo-free/*, …) must route through the
+      // omniroute provider, NOT the bare local Ollama endpoint — otherwise the slug
+      // 404s upstream. Any model whose prefix isn't explicitly local/ollama goes to
+      // omniroute (the OpenAI-compatible gateway resolves all gateway slugs).
+      const targetProvider = rawModel.startsWith('ollama/')
+        ? 'ollama'
+        : rawModel.startsWith('local/') || (!rawModel.includes('/'))
+          ? 'local'
+          : 'omniroute';
+
+      // Verified-free OmniRoute gateway slugs pinned as sensible defaults +
+      // fallback order. auto/* and oc/*-free are the reliable no-cost tiers;
+      // hy3-free is the known-good default used across the floor (from lessons.md).
+      const OMNIROUTE_FREE_MODELS = [
+        'hy3-free', 'auto/coding:free', 'auto/best-free', 'auto/best-coding',
+        'oc/deepseek-v4-flash-free', 'oc/mimo-v2.5-free', 'oc/nemotron-3-ultra-free',
+        'oc/north-mini-code-free', 'big-pickle'
+      ];
+
+      const omniModels: Record<string, { name: string }> = {};
+      for (const m of OMNIROUTE_FREE_MODELS) omniModels[m] = { name: m };
+      // Always register the user-selected model on the gateway provider too, so a
+      // custom oc/<slug> or auto/<slug> resolves regardless of the curated list.
+      if (modelName) omniModels[modelName] = { name: modelName };
+
+      const localModels: Record<string, { name: string }> = {
+        [modelName]: { name: modelName },
+        'llama3': { name: 'llama3' },
+        'qwen2.5vl:3b': { name: 'qwen2.5vl:3b' },
+        'gemma3:4b': { name: 'gemma3:4b' },
+        'hy3-free': { name: 'hy3-free' }
+      };
+
+      const customProviders = {
+        local: {
+          package: '@opencode-ai/ai/providers/openai-compatible',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Local Ollama',
+          settings: { baseURL: baseUrl.replace(/\/+$/, '') },
+          options: { baseURL: baseUrl.replace(/\/+$/, '') },
+          models: localModels
+        },
+        ollama: {
+          package: '@opencode-ai/ai/providers/openai-compatible',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Local Ollama',
+          settings: { baseURL: baseUrl.replace(/\/+$/, '') },
+          options: { baseURL: baseUrl.replace(/\/+$/, '') },
+          models: localModels
+        },
+        omniroute: {
+          package: '@opencode-ai/ai/providers/openai-compatible',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'OmniRoute Multi-Model',
+          settings: { baseURL: omniBaseUrl.replace(/\/+$/, '') },
+          options: { baseURL: omniBaseUrl.replace(/\/+$/, '') },
+          models: omniModels
+        }
+      };
+
+      const comboModels: Record<string, { provider: string; model: string }> = {
+        'llama3': { provider: 'local', model: 'llama3' },
+        'local/llama3': { provider: 'local', model: 'llama3' },
+        'ollama/llama3': { provider: 'ollama', model: 'llama3' },
+        'qwen2.5vl:3b': { provider: 'local', model: 'qwen2.5vl:3b' },
+        'local/qwen2.5vl:3b': { provider: 'local', model: 'qwen2.5vl:3b' },
+        'gemma3:4b': { provider: 'local', model: 'gemma3:4b' },
+        'local/gemma3:4b': { provider: 'local', model: 'gemma3:4b' }
+      };
+      for (const m of OMNIROUTE_FREE_MODELS) {
+        comboModels[m] = { provider: 'omniroute', model: m };
+        comboModels[`omniroute/${m}`] = { provider: 'omniroute', model: m };
       }
-      extra.OPENCODE_CONFIG_CONTENT = JSON.stringify(oc);
+
+      if (modelName) {
+        const prov = targetProvider;
+        if (!comboModels[modelName]) comboModels[modelName] = { provider: prov, model: modelName };
+        if (!comboModels[`${prov}/${modelName}`]) comboModels[`${prov}/${modelName}`] = { provider: prov, model: modelName };
+      }
+
+      const oc: OpenCodeConfigV2 = {
+        $schema: 'https://opencode.ai/config.json',
+        theme: 'system',
+        autoupdate: false,
+        customProviders,
+        provider: customProviders,
+        providers: customProviders,
+        models: comboModels
+      };
+      if (cfg.autoMode) oc.permission = { edit: 'allow', bash: 'allow', webfetch: 'allow' };
+
+      try {
+        console.log('[spawnAgentCore] WRITING OPENCODE CONFIG to ' + join(ocDir, 'opencode.json') + ':', JSON.stringify(oc, null, 2));
+        writeFileSync(join(ocDir, 'tui.json'), JSON.stringify(oc, null, 2), 'utf8');
+        writeFileSync(join(ocDir, 'opencode.json'), JSON.stringify(oc, null, 2), 'utf8');
+        writeFileSync(join(ocDir, 'config.json'), JSON.stringify(oc, null, 2), 'utf8');
+      } catch (e) {
+        console.error('[spawnAgentCore] Failed writing opencode config files to disk:', e);
+      }
+      // DO NOT pass OPENCODE_CONFIG_CONTENT as an env var: OpenCode CLI prioritizes
+      // OPENCODE_CONFIG_CONTENT over disk files, which poisons model resolution when
+      // passing custom providers. We force OpenCode to read disk config via OPENCODE_CONFIG_DIR.
+      delete extra.OPENCODE_CONFIG_CONTENT;
     }
     opts.env = { ...(opts.env ?? {}), ...extra };
+    if (provider === 'opencode' && opts.env) {
+      delete (opts.env as Record<string, string | undefined>).OPENCODE_CONFIG_CONTENT;
+    }
   }
+
+  if (provider === 'opencode') {
+    if (opts.env) {
+      delete (opts.env as Record<string, string | undefined>).OPENCODE_CONFIG_CONTENT;
+    }
+    console.log('[opencode-spawn] exact CLI command:', opts.command);
+    console.log('[opencode-spawn] exact CLI args:', opts.args);
+    console.log('[opencode-spawn] OPENCODE_CONFIG_DIR:', opts.env?.OPENCODE_CONFIG_DIR);
+    console.log('[opencode-spawn] OPENCODE_CONFIG_CONTENT removed for disk fallback');
+  }
+
   // Codex Remote is daemon-based (there is no `/remote-control` slash command).
   // Start/enable the daemon under this agent's isolated CODEX_HOME and connect
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
@@ -3375,6 +3548,31 @@ ipcMain.handle('hive:patchAgentRole', (_evt, id: unknown, role: unknown) => {
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
   return hive.patchAgentRole(id, role);
 });
+ipcMain.handle('hive:appendLesson', (_evt, agentId: unknown, lessonText: unknown) => {
+  if (typeof agentId === 'string' && typeof lessonText === 'string') {
+    hive.appendLesson(agentId, lessonText);
+    return { ok: true };
+  }
+  return { ok: false, error: 'invalid args' };
+});
+ipcMain.handle('hive:failoverAgent', (_evt, id: unknown, reason: unknown) => {
+  if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid id' };
+  if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
+  const reg = hive.registry();
+  const name = reg.agents[id]?.name ?? id;
+  const failoverReason = typeof reason === 'string' && reason ? reason : 'manual failover request';
+  const result = failoverStalledTasks({
+    hive,
+    failedAgentId: id,
+    failedAgentName: name,
+    reason: failoverReason,
+    breakerLevels: (aid) => breaker.levelFor(aid),
+    livePtyAgentIds: new Set(ptyToAgent.values()),
+    worktreePaths,
+    notifyToast: breakerToast
+  });
+  return { ok: true, result };
+});
 
 // ─── IPC: Settings hero payload (remote data, cached) ───────────────────────
 /** Plan copy and sponsor, fetched from the repo so they can change without a
@@ -3571,10 +3769,17 @@ ipcMain.handle('clipboard:saveImage', async () => {
     const name = `paste-${Date.now()}.png`;
     const dest = join(dir, name);
     writeFileSync(dest, img.toPNG());
-    return { ok: true as const, file: { path: dest, name } };
+    const visionRes = await describeImage(dest);
+    return { ok: true as const, file: { path: dest, name, visionText: visionRes.text } };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
+});
+
+// IPC: Vision Bridge image-to-text transformer for text-only model safety
+ipcMain.handle('composer:describeImage', async (_evt, imagePath: unknown) => {
+  if (typeof imagePath !== 'string' || !imagePath) return { ok: false, error: 'invalid image path' };
+  return describeImage(imagePath);
 });
 
 // ─── IPC: command history (SQLite — every prompt submitted to an agent) ──────

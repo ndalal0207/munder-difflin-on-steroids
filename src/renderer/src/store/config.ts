@@ -236,20 +236,24 @@ export const QWEN_MODELS: ModelOption[] = [
  *  field stays editable; `opencode models` / models.dev is the source of truth).
  *  // TODO-verify exact live slugs (humanQA — they drift). */
 export const OPENCODE_MODELS: ModelOption[] = [
-  // "CLI default", not "default" — the distinction ANTIGRAVITY_MODELS already
-  // draws: pass NO --model and run whatever OpenCode itself is configured and
-  // authenticated for. That is not the harness's own default model, and calling
-  // both "default" is what made the two impossible to tell apart. This is now the
-  // PRESELECTED entry for OpenCode, because a BYOK slug the user holds no key for
-  // fails silently — see the recommendedOrchestratorModel note in agentProvider.ts.
   { id: undefined, label: 'CLI default' },
+  // Verified-free OmniRoute gateway slugs (no auth, OpenAI-compatible). hy3-free is
+  // the floor-default; auto/* and oc/*-free are reliable no-cost fallbacks.
+  { id: 'omniroute/hy3-free', label: 'HY3-Free (OmniRoute · free)' },
+  { id: 'omniroute/auto/coding:free', label: 'Auto Coding Free (OmniRoute · free)' },
+  { id: 'omniroute/auto/best-free', label: 'Auto Best-Free (OmniRoute · free)' },
+  { id: 'omniroute/auto/best-coding', label: 'Auto Best-Coding (OmniRoute)' },
+  { id: 'omniroute/oc/deepseek-v4-flash-free', label: 'DeepSeek V4 Flash Free (OmniRoute)' },
+  { id: 'omniroute/big-pickle', label: 'OmniRoute Big-Pickle' },
+  { id: 'local/llama3', label: 'Local Llama 3' },
+  { id: 'local/hy3-free', label: 'Local HY3-Free' },
+  { id: 'local/qwen2.5vl:3b', label: 'Local Qwen 2.5VL' },
   { id: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5 (Anthropic)' },
   { id: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5 (Anthropic)' },
   { id: 'openai/gpt-5', label: 'GPT-5 (OpenAI)' },
   { id: 'openai/gpt-5-mini', label: 'GPT-5 mini (OpenAI)' },
   { id: 'openrouter/anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5 (OpenRouter)' },
-  { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro (Google)' },
-  { id: 'local/llama3', label: 'Local · OpenAI-compatible (set base-URL)' }
+  { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro (Google)' }
 ];
 
 /** Models offered when an agent runs on Crush (`crush`). Crush's `--model` takes a
@@ -408,9 +412,13 @@ export function buildSpawnCommand(
         : preset.defaultCommand;
   let cmd = base;
   if (preset.supportsModel && model && preset.modelFlag) {
+    let modelSlug = model;
+    if (!modelSlug.includes('/') && (provider === 'opencode' || provider === 'crush' || provider === 'pi')) {
+      modelSlug = provider === 'opencode' ? `local/${modelSlug}` : `ollama/${modelSlug}`;
+    }
     // Quote model values that contain whitespace (agy labels like
     // "Gemini 3.1 Pro (High)") so the command tokenizer keeps them one arg.
-    const m = /\s/.test(model) ? `"${model}"` : model;
+    const m = /\s/.test(modelSlug) ? `"${modelSlug}"` : modelSlug;
     cmd = `${cmd} ${preset.modelFlag} ${m}`;
   }
   // Auto (skip-permissions) mode appends each provider's own flag — Claude's

@@ -50,6 +50,48 @@ export type AgentProvider =
  *               its upstream base URL (the sidecar's loopback URL is injected there),
  *               and `inboxDelivery` is how mail reaches it ('terminal' work-order
  *               handoff today; 'serve' reserved for a future HTTP push path). */
+/**
+ * ============================================================================
+ * WARNING TO AI AGENTS & DEVELOPERS:
+ * OpenCode requires custom OpenAI-compatible providers to be defined strictly
+ * under the `customProviders` key in its opencode.json / config.json schema.
+ * DO NOT use `provider` or `providers` as the primary key.
+ * Top-level model routing MUST be defined in the `models` block as combo entries.
+ * ============================================================================
+ */
+export interface OpenCodeCustomProvider {
+  package?: string;
+  npm?: string;
+  name?: string;
+  settings?: {
+    baseURL: string;
+  };
+  options?: {
+    baseURL: string;
+  };
+  models?: Record<string, { name: string }>;
+}
+
+export interface OpenCodeModelCombo {
+  provider: string;
+  model: string;
+}
+
+export interface OpenCodeConfigV2 {
+  $schema?: string;
+  theme?: string;
+  autoupdate?: boolean;
+  permission?: {
+    edit?: string;
+    bash?: string;
+    webfetch?: string;
+  };
+  customProviders: Record<string, OpenCodeCustomProvider>;
+  provider?: Record<string, OpenCodeCustomProvider>;
+  providers?: Record<string, OpenCodeCustomProvider>;
+  models: Record<string, OpenCodeModelCombo>;
+}
+
 export type BridgeDescriptor =
   | { kind: 'hooks'; shim: 'agy' | 'codex' | 'pi' | 'opencode' | 'grok' | 'gemini' }
   | {
@@ -350,9 +392,11 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     // OpenCode's TUI exposes no skip-permissions FLAG; headless auto-approve is a
     // config concern (permission:allow). To keep auto-mode gated behind the floor
     // `config.autoMode` toggle (Pam guardrail #2), the permission JSON is NOT a
-    // static nonInteractiveEnv — spawnAgentCore builds OPENCODE_CONFIG_CONTENT
-    // dynamically (permission:allow only when autoMode is on; + a local provider
-    // block when a base-URL is set). So no auto flag is spliced onto the command.
+    // static nonInteractiveEnv — spawnAgentCore writes a MODERN-SCHEMA opencode.json
+    // (permission:allow only when autoMode is on; + local/ollama/omniroute providers
+    // incl. the OmniRoute gateway) to OPENCODE_CONFIG_DIR at spawn. It deliberately
+    // does NOT pass OPENCODE_CONFIG_CONTENT (legacy schema, ignored by opencode
+    // 1.18.x → ProviderModelNotFoundError). So no auto flag is spliced onto the command.
     autoModeFlag: '',
     autoFlag: '',
     supportsModel: true,
