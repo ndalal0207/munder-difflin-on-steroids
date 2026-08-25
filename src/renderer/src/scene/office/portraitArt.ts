@@ -247,7 +247,7 @@ const HAIR_FNS = { styleShort, styleFloppy, styleFrame, styleBun, styleCurly, st
 type HairStyle = keyof typeof HAIR_FNS;
 
 // ─── facial hair ─────────────────────────────────────────────────────────────
-type Facial = 'mustache' | 'mustacheSm' | 'stubble' | 'goatee';
+type Facial = 'mustache' | 'mustacheSm' | 'stubble' | 'goatee' | 'beard';
 function drawFacial(buf: Buf, kind: Facial, color: RGB): void {
   const [, base, sh] = shades(color);
   if (kind === 'mustache') {
@@ -262,6 +262,12 @@ function drawFacial(buf: Buf, kind: Facial, color: RGB): void {
     for (const x of [8, 9]) set(buf, x, 15, base);
     set(buf, 8, 14, base); set(buf, 9, 14, base);
     for (const x of [7, 8, 9, 10]) set(buf, x, 13, base);
+  } else if (kind === 'beard') {
+    for (let y = 13; y <= 16; y++) for (let x = 6; x <= 11; x++) set(buf, x, y, base);
+    set(buf, 5, 13, base); set(buf, 12, 13, base);
+    set(buf, 5, 14, base); set(buf, 12, 14, base);
+    set(buf, 4, 14, sh); set(buf, 13, 14, sh);
+    rect(buf, 6, 16, 11, 17, sh);
   }
 }
 
@@ -506,6 +512,19 @@ const RECIPES: Record<OfficeCharacterName, Recipe> = {
   toby:     { skin: 'light', hairc: [106, 90, 66],  hair: 'styleShort',  hairargs: { part: 'L', recede: 1 }, cloth: 'dressshirt', c1: [150, 150, 120], facial: 'mustacheSm', brow: 'soft', mouth: 'frown' },
   creed:    { skin: 'light', hairc: [170, 166, 156], hair: 'styleBald',   cloth: 'dressshirt', c1: [126, 130, 96], facial: 'stubble', brow: 'flat', mouth: 'neutral' },
   meredith: { skin: 'light', hairc: [154, 82, 46],  hair: 'styleMessy',  hairargs: { length: 15 }, cloth: 'blouse', c1: [176, 86, 74], brow: 'raised', mouth: 'smile', lashes: true },
+  darryl:   { skin: 'dark',  hairc: [24, 20, 22],   hair: 'styleShort',  hairargs: { part: 'L' }, cloth: 'polo', c1: [55, 75, 95], c2: [45, 65, 85], facial: 'goatee', brow: 'flat', mouth: 'smile', heavy: true },
+  erin:     { skin: 'light', hairc: [195, 95, 45],  hair: 'styleFrame',  hairargs: { length: 18, vol: 1 }, cloth: 'cardigan', c1: [95, 175, 150], c2: [245, 240, 235], brow: 'raised', mouth: 'grin', blush: true, lashes: true },
+  jan:      { skin: 'light', hairc: [210, 185, 125], hair: 'styleShort', hairargs: { part: 'R' }, cloth: 'suit', c1: [135, 55, 95], brow: 'flat', mouth: 'neutral', lashes: true },
+  david:    { skin: 'light', hairc: [75, 60, 48],   hair: 'styleShort',  hairargs: { part: 'L', recede: 1 }, cloth: 'suit', c1: [48, 58, 78], tie: [175, 60, 60], brow: 'soft', mouth: 'smile' },
+  gabe:     { skin: 'light', hairc: [55, 45, 38],   hair: 'styleShort',  hairargs: { part: 'L' }, cloth: 'sweater', c1: [125, 138, 148], brow: 'soft', mouth: 'neutral' },
+  karen:    { skin: 'tan',   hairc: [32, 24, 20],   hair: 'styleFrame',  hairargs: { length: 16, vol: 1 }, cloth: 'suit', c1: [70, 75, 85], brow: 'flat', mouth: 'smile', lashes: true },
+  holly:    { skin: 'light', hairc: [215, 180, 115], hair: 'styleCurly', cloth: 'cardigan', c1: [225, 135, 95], c2: [245, 242, 235], brow: 'raised', mouth: 'smile', blush: true, lashes: true },
+  mose:     { skin: 'light', hairc: [45, 35, 25],   hair: 'styleMessy',  hairargs: { length: 9 }, cloth: 'dressshirt', c1: [120, 95, 65], facial: 'beard', brow: 'angry', mouth: 'neutral' },
+  robert:   { skin: 'light', hairc: [140, 140, 140], hair: 'styleBald',  cloth: 'suit', c1: [38, 42, 50], tie: [60, 60, 65], brow: 'flat', mouth: 'neutral' },
+  packer:   { skin: 'light', hairc: [85, 62, 38],   hair: 'styleRecede', cloth: 'polo', c1: [170, 50, 45], c2: [140, 40, 35], brow: 'raised', mouth: 'grin' },
+  clark:    { skin: 'light', hairc: [70, 50, 35],   hair: 'styleShort',  hairargs: { part: 'L' }, cloth: 'dressshirt', c1: [155, 175, 190], tie: [80, 90, 110], glasses: true, brow: 'soft', mouth: 'smile' },
+  pete:     { skin: 'light', hairc: [80, 55, 35],   hair: 'styleFloppy', cloth: 'dressshirt', c1: [165, 185, 210], tie: [100, 110, 130], brow: 'flat', mouth: 'smile' },
+  roy:      { skin: 'light', hairc: [55, 40, 30],   hair: 'styleMessy',  hairargs: { length: 8 }, cloth: 'polo', c1: [65, 75, 85], c2: [50, 60, 70], facial: 'stubble', brow: 'flat', mouth: 'neutral', heavy: true },
 };
 
 /** The face/hair group (head → face → facial hair → hair → glasses), no clothing. */

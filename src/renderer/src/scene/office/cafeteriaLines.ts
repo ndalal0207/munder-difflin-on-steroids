@@ -76,6 +76,19 @@ const BY_CHARACTER: Partial<Record<OfficeCharacterName, readonly string[]>> = {
   toby:     ['I should write that up…', 'HR-wise this break is fine', 'no one ever sits with me'],
   creed:    ['which one of you is the new guy?', 'I’ve eaten worse out of that fridge', 'mung beans. under my desk.'],
   meredith: ['is it 5 o’clock yet?', 'someone spike the coffee?'],
+  darryl:   ['Dinkin flicka', 'fluffy fingers', 'catch you on the flippity flip', 'starting up the forklift', 'Bippity boppity, give me the zoppity'],
+  erin:     ['Dunder Mifflin, this is Erin!', 'disposable cameras are so fun', 'I boiled some Gatorade', 'what if we just throw it away?'],
+  jan:      ['Serenity by Jan', 'I have an executive meeting in New York', 'Hunter wrote a song about this', 'do not make me call corporate'],
+  david:    ['what say you, Michael?', 'SUCK IT!', 'I don’t understand how this branch makes money', 'David Wallace here'],
+  gabe:     ['SHUT UP ABOUT THE SUN!', 'cinema of the unsettling', 'I am the toilet of this office', 'Lady Gaga dance routine is ready'],
+  karen:    ['ever had a Utica bagel?', 'Jim is looking at the camera again', 'Call of Duty match tonight', 'corporate sent me'],
+  holly:    ['do the Yoda voice!', 'Michael, that is not HR compliant', 'pass the maple candies', 'let’s do an improv sketch'],
+  mose:     ['welcome to Schrute Farms!', '*runs alongside car*', 'fear is why we exist', 'the beets are ready'],
+  robert:   ['I am the lizard king', 'everything is sex', 'there are two lists', 'tell me about your nightmares'],
+  packer:   ['what’s up, Halpert?!', 'Packer’s in the house!', 'who has two thumbs and loves paper?', 'taking Michael to Hooters'],
+  clark:    ['I’m Dwight Jr.', 'suit fitting went okay', 'can I sit here?', 'learning the paper business'],
+  pete:     ['please don’t call me Plop', 'building a card tower', 'customer service line 2', 'hanging out at reception'],
+  roy:      ['heading down to the warehouse', 'learned to play piano', 'gravel business is booming', 'anyone seen the dolly?'],
 };
 
 /** A solo break-room line. Character flavour ~60% of the time, else the line
@@ -148,6 +161,11 @@ const EXCHANGES: readonly Exchange[] = [
   ['standup ran 40 minutes.', 'could’ve been an email.'],
   ['is the build green yet?', '...don’t look.'],
   ['who reply-all’d everyone?', 'we don’t talk about it.'],
+  ['dinkin flicka.', 'going macho.', 'flippity flip.'],
+  ['I invented a toy called Suck It.', 'what does it do?', 'SUCK IT!'],
+  ['shut up about the sun!', '...Gabe, calm down.'],
+  ['I am the lizard king.', 'you’re the CEO.', 'same difference.'],
+  ['Packer’s in the house!', 'and we are leaving.'],
 ];
 
 // ─── "that's what she said" ──────────────────────────────────────────────────
@@ -226,6 +244,19 @@ const KEYED_EXCHANGES: Partial<Record<OfficeCharacterName, Exchange>> = {
   stanley:  ['is it Pretzel Day?', 'no, Stanley.', '...did I stutter?'],
   andy:     ['I went to Cornell.', 'nobody cares.', '...I went to Cornell.'],
   jim:      ['question.', 'yes.', 'nothing. just checking.'],
+  darryl:   ['dinkin flicka.', '...what does that even mean, Darryl?'],
+  erin:     ['Dunder Mifflin, this is Erin!', '...Erin, we are sitting at the table.'],
+  jan:      ['are you burning candles in here?', 'it’s Serenity by Jan. buy one.'],
+  david:    ['how is this branch functioning?', 'honestly? nobody knows.'],
+  gabe:     ['shut up about the sun!', '...nobody was talking about the sun.'],
+  karen:    ['did you prank Dwight again?', 'it was a team effort.'],
+  holly:    ['HR announcement!', 'is it Toby?', '...no, it’s Holly! yay!'],
+  mose:     ['where is Mose?', '*runs past window*'],
+  robert:   ['do you want the sex metaphor or the nature metaphor?', '...nature, please.'],
+  packer:   ['what’s up, nerds?!', '...oh no, Packer is here.'],
+  clark:    ['Dwight said I’m his protégé.', 'good luck with that.'],
+  pete:     ['hey Plop.', '...my name is Pete.'],
+  roy:      ['going to the warehouse.', 'grab some boxes while you’re there.'],
 };
 
 /** A multi-beat exchange for two agents sharing a table. Beats alternate:

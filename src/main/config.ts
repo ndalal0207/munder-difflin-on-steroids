@@ -158,6 +158,17 @@ export interface CircuitBreakerConfig {
   errorStormLimit?: number;
   /** Output-token velocity (tokens/min, diffed across beats) before tripping. */
   tokenVelocityPerMin?: number;
+  /** Sliding time window (ms) for the per-key burst counter. Consecutive identical
+   *  tool calls are only counted toward `repeatedToolLimit` when they occur within
+   *  this window; a gap larger than the window resets the burst counter so that
+   *  the same file being read again later (e.g. a second pass hours later) never
+   *  inherits the previous run's count. Default 60 000 ms (60 s). */
+  repeatWindowMs?: number;
+  /** Basename patterns (case-insensitive) of file paths that are unconditionally
+   *  exempt from the repeat-loop counter. Orchestrator inbox/outbox polling reads
+   *  the same file on every beat by design and must never trip the breaker.
+   *  Defaults: ['inbox.md', 'outbox.md', 'inbox.jsonl', 'outbox.jsonl']. */
+  pollPathPatterns?: string[];
 }
 
 /** Enterprise Knowledge Graph (multimodal context store + agent access tool).
@@ -323,6 +334,10 @@ export interface HarnessConfig {
   providerBaseUrls?: Partial<Record<AgentProvider, string>>;
   /** Per-CLI-provider default model slug, used to pre-fill the model picker. */
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
+  /** Per-CLI-provider fallback model slug for rate-limit failover (e.g., 3x 429).
+   *  When primary model hits persistent 429s, the proxy bridge will emit RateLimitWarning
+   *  and the orchestrator can auto-switch to this fallback. */
+  providerFallbackModels?: Partial<Record<AgentProvider, string>>;
   /** Master toggle for the Slack → Michael's-queue integration. */
   slackEnabled?: boolean;
   /** Slack app signing secret (Basic Information → Signing Secret). Never logged. */
@@ -617,6 +632,19 @@ function normalizeStoredHomes(cfg: HarnessConfig): HarnessConfig {
       .filter((h): h is string => typeof h === 'string' && !!h.trim())
       .map((h) => expandTilde(h))
       .filter((h) => (seen.has(h) ? false : (seen.add(h), true)));
+  }
+
+  // Normalize godModel & defaultModel slugs
+  if (cfg.godModel === 'llama3' || cfg.godModel === 'qwen2.5vl:3b' || (cfg.godModel && cfg.godProvider === 'opencode' && !cfg.godModel.includes('/'))) {
+    // If godModel was set to bare 'llama3' without provider, default Michael to Claude Sonnet / OmniRoute for maximum reliability
+    cfg.godProvider = 'claude';
+    cfg.godModel = 'claude-3-7-sonnet';
+  } else if (cfg.godModel && (cfg.godProvider === 'crush' || cfg.godProvider === 'pi') && !cfg.godModel.includes('/')) {
+    cfg.godModel = `ollama/${cfg.godModel}`;
+  }
+
+  if (cfg.defaultModel && cfg.defaultCommand === 'opencode' && !cfg.defaultModel.includes('/')) {
+    cfg.defaultModel = `local/${cfg.defaultModel}`;
   }
   return cfg;
 }

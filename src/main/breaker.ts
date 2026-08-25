@@ -70,7 +70,17 @@ const DEFAULTS = {
   hardStop: false,
   repeatedToolLimit: 8,
   errorStormLimit: 5,
-  tokenVelocityPerMin: 60_000 // output tokens/min — coarse backstop, deliberately high
+  tokenVelocityPerMin: 60_000, // output tokens/min — coarse backstop, deliberately high
+  /** Sliding window for the repeat-burst counter. Identical calls spread further
+   *  apart than this reset the counter, so legitimate sequential reads across files
+   *  (which arrive on the order of seconds, not milliseconds) never accumulate into
+   *  a trip even if the same file is occasionally re-read later. Default 60 s. */
+  repeatWindowMs: 60_000,
+  /** Path patterns (bare basenames, case-insensitive) that are unconditionally
+   *  exempt from the repeat-loop counter. Orchestrator inbox- and outbox-polling
+   *  reads the same file on every tick by design — they must never trigger a steer.
+   *  Matched against the resolved file path of Read/Write/Edit calls. */
+  pollPathPatterns: ['inbox.md', 'outbox.md', 'inbox.jsonl', 'outbox.jsonl'] as string[]
 };
 
 /** Safety cap on the PreCompact exemption: if PostCompact never arrives (crash,
@@ -90,9 +100,13 @@ interface AgentBreakerState {
   level: BreakerLevel;
   reason: string;
   lastSample: AgentUsageSample | null;
-  /** Consecutive identical tool calls (same name+input). */
+  /** The key of the most-recent tool call (normalized name + path or truncated input). */
   repeatKey: string | null;
+  /** How many *consecutive* times that key has fired within the current burst window. */
   repeatCount: number;
+  /** Timestamp of the FIRST call in the current burst window (used to expire the
+   *  window and reset the counter when calls are spread across time). */
+  repeatWindowStart: number;
   /** Consecutive api_error / retry events with no intervening progress. */
   errorCount: number;
   /** Δoutput-based trips are exempt until this instant (compaction in flight,
@@ -121,6 +135,8 @@ export class CircuitBreaker {
       repeatedToolLimit: c.repeatedToolLimit ?? DEFAULTS.repeatedToolLimit,
       errorStormLimit: c.errorStormLimit ?? DEFAULTS.errorStormLimit,
       tokenVelocityPerMin: c.tokenVelocityPerMin ?? DEFAULTS.tokenVelocityPerMin,
+      repeatWindowMs: c.repeatWindowMs ?? DEFAULTS.repeatWindowMs,
+      pollPathPatterns: c.pollPathPatterns ?? DEFAULTS.pollPathPatterns,
       costCapUsd: c.costCapUsd,
       costCapTokens: c.costCapTokens,
       agentTokenCaps: c.agentTokenCaps
@@ -131,7 +147,8 @@ export class CircuitBreaker {
     let s = this.agents.get(agentId);
     if (!s) {
       s = {
-        level: 'healthy', reason: '', lastSample: null, repeatKey: null, repeatCount: 0,
+        level: 'healthy', reason: '', lastSample: null,
+        repeatKey: null, repeatCount: 0, repeatWindowStart: 0,
         errorCount: 0, compactingUntil: 0, lastDistinctToolAt: 0, noProgressBeats: 0
       };
       this.agents.set(agentId, s);
@@ -151,17 +168,44 @@ export class CircuitBreaker {
 
   // ── event-driven inputs (fed by HookServer) ──────────────────────────────
 
-  /** A tool call ran. A NEW (name+input) key counts as forward progress (resets
+  /** A tool call ran. A NEW (name+path) key counts as forward progress (resets
    *  the repeat + error counters and stamps the distinct-tool clock the
-   *  no-progress arm reads); the SAME key in a row is the loop signal. */
+   *  no-progress arm reads); the SAME key within the burst window is the loop
+   *  signal. Keys that match the orchestrator-poll exemption list are silently
+   *  skipped so routine inbox/outbox syncs never register as erratic behavior. */
   recordToolUse(agentId: string, toolName: string | undefined, toolInput: unknown, now = Date.now()): void {
     const s = this.get(agentId);
-    const key = this.toolKey(toolName, toolInput);
+    const cfg = this.cfg();
+
+    // Extract the canonical path for file-oriented tools so the key is NOT
+    // sensitive to unrelated input fields or serialization differences.
+    const resolvedPath = this.resolveToolPath(toolName, toolInput);
+
+    // ── Orchestrator-poll exemption ─────────────────────────────────────────
+    // Inbox/outbox reads are mandated background syncs — they intentionally hit
+    // the same file every tick. Exempt them before touching any counter so they
+    // can never accumulate into a false trip, regardless of frequency.
+    if (resolvedPath && this.isPollExempt(resolvedPath, cfg.pollPathPatterns)) return;
+
+    const key = this.toolKey(toolName, resolvedPath, toolInput);
+
     if (key === s.repeatKey) {
-      s.repeatCount += 1;
+      // ── Per-window burst validation ─────────────────────────────────────────
+      // Only count toward the limit when the calls are truly clustered within
+      // a tight time window. If the gap since the window opened exceeds
+      // repeatWindowMs, this is a new burst — reset the window and start fresh.
+      if (now - s.repeatWindowStart > cfg.repeatWindowMs) {
+        // Previous burst has aged out: start a new window for this key.
+        s.repeatWindowStart = now;
+        s.repeatCount = 1;
+      } else {
+        s.repeatCount += 1;
+      }
     } else {
+      // Different key → forward progress; reset everything.
       s.repeatKey = key;
       s.repeatCount = 1;
+      s.repeatWindowStart = now;
       s.errorCount = 0; // a distinct tool call = progress; clear the error storm
       s.lastDistinctToolAt = now;
     }
@@ -189,14 +233,49 @@ export class CircuitBreaker {
     if (s.compactingUntil > now) s.compactingUntil = now + POST_COMPACT_GRACE_MS;
   }
 
-  private toolKey(toolName: string | undefined, toolInput: unknown): string {
-    // Truncating replacer: a Write/Edit tool_input carries the whole file body
-    // (up to MBs), and this runs synchronously inside the hook reply path on
-    // EVERY PostToolUse — serializing it all only to keep 200 chars was a
-    // multi-MB transient allocation per large write. Capping each string field
-    // bounds the work while keeping the key semantics (a repeat of the same
-    // call still yields the same key; distinct calls still differ within the
-    // first 200 chars far more often than full serialization ever mattered).
+  /**
+   * Extract the canonical file path from a file-oriented tool call, or null if
+   * the tool is not file-oriented / no path field is present. Supports the common
+   * Claude Code tool shapes: `{ path }`, `{ file_path }`, `{ paths: […] }` (the
+   * first entry), and the MultiEdit `{ edits: [{ path }] }` array.
+   */
+  private resolveToolPath(toolName: string | undefined, toolInput: unknown): string | null {
+    const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookRead', 'NotebookEdit']);
+    if (!toolName || !FILE_TOOLS.has(toolName)) return null;
+    if (!toolInput || typeof toolInput !== 'object') return null;
+    const inp = toolInput as Record<string, unknown>;
+    if (typeof inp['path'] === 'string') return inp['path'];
+    if (typeof inp['file_path'] === 'string') return inp['file_path'];
+    if (Array.isArray(inp['paths']) && typeof inp['paths'][0] === 'string') return inp['paths'][0];
+    if (Array.isArray(inp['edits']) && inp['edits'].length > 0) {
+      const first = inp['edits'][0] as Record<string, unknown>;
+      if (typeof first['path'] === 'string') return first['path'];
+    }
+    return null;
+  }
+
+  /**
+   * Return true when a resolved file path matches one of the orchestrator-poll
+   * exemption patterns. Patterns are compared against the BASENAME of the path,
+   * case-insensitively. This keeps the exemption narrowly scoped (no accidental
+   * broad wildcards) while covering every hive-root layout variation.
+   */
+  private isPollExempt(resolvedPath: string, patterns: string[]): boolean {
+    // Derive the basename without pulling in `node:path` at module level —
+    // the breaker is a pure-policy module with no fs or path imports.
+    const base = resolvedPath.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? '';
+    return patterns.some((p) => base === p.toLowerCase());
+  }
+
+  private toolKey(toolName: string | undefined, resolvedPath: string | null, toolInput: unknown): string {
+    // For file-oriented tools we already have the canonical path — use it
+    // directly so the key is unambiguous and allocation-free for large writes.
+    if (resolvedPath !== null) {
+      return `${toolName ?? '?'}:${resolvedPath}`;
+    }
+    // For all other tools: truncating serialization (the original approach).
+    // Capping each string field bounds the synchronous work on the hook path
+    // while keeping key semantics (same call → same key within 200 chars).
     let inp = '';
     try {
       inp = JSON.stringify(toolInput, (_k, v) =>

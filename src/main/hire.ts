@@ -5,14 +5,16 @@
  * security model. Deliberately free of any `electron` import so it can be
  * smoke-tested as a plain Node module (mirrors webhook.ts's approach).
  */
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
+import { homedir } from 'node:os';
 import {
   HIRE_MAX_BYTES,
   isAllowedManifestUrl,
   validateHireManifest,
+  parseMarkdownAgent,
   type HireManifest,
   type HireValidation
 } from '../shared/hire';
@@ -240,12 +242,18 @@ async function readBounded(res: Response, maxBytes: number): Promise<string | nu
   return Buffer.concat(chunks).toString('utf8');
 }
 
-/** Read + validate a hire manifest from a local JSON file (file import). */
+/** Read + validate a hire manifest from a local JSON or Markdown file (file import). */
 export function readHireManifestFile(path: string): HireResult {
   try {
     if (statSync(path).size > HIRE_MAX_BYTES) return { ok: false, error: 'manifest too large' };
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    return finish(validateHireManifest(parsed));
+    const raw = readFileSync(path, 'utf8');
+
+    if (path.toLowerCase().endsWith('.json')) {
+      const parsed: unknown = JSON.parse(raw);
+      return finish(validateHireManifest(parsed));
+    }
+
+    return finish(parseMarkdownAgent(raw, basename(path)));
   } catch (e) {
     return { ok: false, error: `could not read manifest: ${String(e)}` };
   }
@@ -270,4 +278,52 @@ export function readHireManifestFiles(paths: readonly string[]): {
     }
   }
   return { manifests, errors };
+}
+
+/** Scan global ~/.claude/agents and optional project .claude/agents for markdown/json agent definitions. */
+export function scanGlobalClaudeAgents(projectCwd?: string): {
+  agents: Array<{ path: string; filename: string; manifest: HireManifest }>;
+  errors: string[];
+} {
+  const candidates: string[] = [];
+  const home = homedir();
+  const globalDir = join(home, '.claude', 'agents');
+  if (existsSync(globalDir)) {
+    try {
+      for (const f of readdirSync(globalDir)) {
+        if (f.endsWith('.md') || f.endsWith('.markdown') || f.endsWith('.json')) {
+          candidates.push(join(globalDir, f));
+        }
+      }
+    } catch {
+      /* ignore read errors */
+    }
+  }
+
+  if (projectCwd) {
+    const projectDir = join(projectCwd, '.claude', 'agents');
+    if (existsSync(projectDir)) {
+      try {
+        for (const f of readdirSync(projectDir)) {
+          if (f.endsWith('.md') || f.endsWith('.markdown') || f.endsWith('.json')) {
+            candidates.push(join(projectDir, f));
+          }
+        }
+      } catch {
+        /* ignore read errors */
+      }
+    }
+  }
+
+  const agents: Array<{ path: string; filename: string; manifest: HireManifest }> = [];
+  const errors: string[] = [];
+  for (const filePath of candidates) {
+    const res = readHireManifestFile(filePath);
+    if (res.ok && res.manifest) {
+      agents.push({ path: filePath, filename: basename(filePath), manifest: res.manifest });
+    } else if (!res.ok) {
+      errors.push(`${basename(filePath)}: ${res.error}`);
+    }
+  }
+  return { agents, errors };
 }

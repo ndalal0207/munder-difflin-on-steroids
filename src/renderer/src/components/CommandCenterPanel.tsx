@@ -460,21 +460,15 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
       if (!killed.ok && !/^no pty:/.test(killed.error ?? '')) {
         throw new Error(killed.error ?? 'Could not stop the current process.');
       }
-      if (resume) {
-        // A blank xterm can retain corrupt renderer/DOM/subscription state even
-        // after its PTY is healthy. Throw that one terminal away, acquire its
-        // replacement BEFORE spawning (so startup output has a listener), then
-        // bump the key so React remounts only this agent's terminal card.
-        disposeTerminal(a.ptyId);
-        acquireTerminal(a.ptyId);
-        updateAgent(a.id, {
-          terminalGeneration: (a.terminalGeneration ?? 0) + 1,
-          status: 'idle',
-          action: 'recreating terminal…'
-        });
-      } else {
-        resetTerminal(a.ptyId);
-      }
+      // Always dispose of old xterm state and bump terminalGeneration so React
+      // remounts a fresh xterm view, clearing any previous CLI error screen.
+      disposeTerminal(a.ptyId);
+      acquireTerminal(a.ptyId);
+      updateAgent(a.id, {
+        terminalGeneration: (a.terminalGeneration ?? 0) + 1,
+        status: 'idle',
+        action: 'recreating terminal…'
+      });
       const command = buildSpawnCommand(cfg, model, provider);
       const [exe, ...args] = tokenizeCommand(command.trim());
       const hive = {

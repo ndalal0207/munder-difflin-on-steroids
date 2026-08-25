@@ -45,6 +45,19 @@ interface HookPayload {
   cache_creation?: number;
 }
 
+/** RateLimitWarning payload (synthesized by the proxy-bridge sidecar when
+ *  a 429/5xx is retried with exponential backoff). */
+export interface RateLimitWarningPayload extends HookPayload {
+  hook_event_name: 'RateLimitWarning';
+  attempt: number;
+  maxRetries: number;
+  statusCode: number;
+  delayMs: number;
+  isRateLimit: boolean;
+  upstream: string;
+  model: string;
+}
+
 export class HookServer {
   private server: Server | null = null;
   /** agentId → the live session's transcript file, learned from hook payloads.
@@ -201,6 +214,15 @@ export class HookServer {
       return {};
     }
 
+    // RateLimitWarning — synthesized by the proxy-bridge sidecar when a 429/5xx
+    // is retried. Allows the orchestrator to track persistent rate limits and
+    // trigger fallback model switching.
+    if (event === 'RateLimitWarning' && agentId) {
+      const warning = p as RateLimitWarningPayload;
+      this.emitRateLimitWarning(agentId, warning);
+      return {};
+    }
+
     // Feed the breaker its hook-derived loop signal: a tool that actually ran.
     // A repeated identical (name+input) PostToolUse is the runaway-loop tell.
     if (event === 'PostToolUse' && agentId) {
@@ -335,5 +357,45 @@ export class HookServer {
       message: p.message,
       blocked
     });
+  }
+
+  /** Emit a RateLimitWarning to the renderer and track consecutive 429s for fallback. */
+  private emitRateLimitWarning(agentId: string, warning: RateLimitWarningPayload): void {
+    // Send to renderer for UI display
+    this.getWebContents()?.send('hive:rateLimitWarning', {
+      agentId,
+      attempt: warning.attempt,
+      maxRetries: warning.maxRetries,
+      statusCode: warning.statusCode,
+      delayMs: warning.delayMs,
+      isRateLimit: warning.isRateLimit,
+      upstream: warning.upstream,
+      model: warning.model
+    });
+    
+    // Track consecutive 429s in memory for fallback logic
+    // We use the breaker's error tracking but with a specific 429 counter
+    if (warning.isRateLimit) {
+      const key = `ratelimit_${agentId}`;
+      const now = Date.now();
+      // Store in contextById temporarily for rate limit tracking
+      const existing = this.contextById.get(key);
+      if (existing && now - existing.ts < 60000) { // within 1 minute
+        existing.tokens += 1; // reuse tokens field as 429 counter
+        existing.ts = now;
+      } else {
+        this.contextById.set(key, { tokens: 1, limit: warning.maxRetries, ts: now });
+      }
+      
+      // If we've hit max retries for this agent, emit a fallback event
+      if (existing && existing.tokens >= warning.maxRetries) {
+        this.getWebContents()?.send('hive:fallbackModel', {
+          agentId,
+          originalModel: warning.model,
+          fallbackModel: this.getConfig().providerFallbackModels?.[warning.model.split('/')[0] as any] || 'omniroute/auto/best-coding',
+          reason: `Rate limit exceeded after ${warning.maxRetries} retries`
+        });
+      }
+    }
   }
 }

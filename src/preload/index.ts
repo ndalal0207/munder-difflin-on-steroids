@@ -52,6 +52,10 @@ export interface HiveAgentMeta {
   isGod?: boolean;
   /** Michael's prep assistant — send-only; enriches prompts and forwards them. */
   isAssistant?: boolean;
+  /** Markdown persona / custom instructions for the agent. */
+  persona?: string;
+  /** Standing goal / mission for the agent. */
+  goal?: string;
 }
 
 export interface HiveMessage {
@@ -746,6 +750,9 @@ const api = {
    *  keep running; Michael is told to stop routing work to them. */
   hiveSetAgentHold: (id: string, hold: boolean): Promise<{ ok: boolean; onHold?: boolean; error?: string }> =>
     ipcRenderer.invoke('hive:setAgentHold', id, hold),
+  /** Trigger automatic failover of in-flight tasks from a stalled agent to the next best agent. */
+  hiveFailoverAgent: (id: string, reason?: string): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+    ipcRenderer.invoke('hive:failoverAgent', id, reason),
   hiveBoard: (): Promise<string> => ipcRenderer.invoke('hive:board'),
   hiveTasks: (): Promise<unknown> => ipcRenderer.invoke('hive:tasks'),
   hiveLog: (n?: number): Promise<unknown[]> => ipcRenderer.invoke('hive:log', n ?? 200),
@@ -860,6 +867,22 @@ const api = {
     ipcRenderer.on('hive:contextUpdate', listener);
     return () => ipcRenderer.removeListener('hive:contextUpdate', listener);
   },
+  /** RateLimitWarning from proxy bridge when 429/5xx is retried with backoff. */
+  onHiveRateLimitWarning: (
+    cb: (e: { agentId: string; attempt: number; maxRetries: number; statusCode: number; delayMs: number; isRateLimit: boolean; upstream: string; model: string }) => void
+  ): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: { agentId: string; attempt: number; maxRetries: number; statusCode: number; delayMs: number; isRateLimit: boolean; upstream: string; model: string }) => cb(payload);
+    ipcRenderer.on('hive:rateLimitWarning', listener);
+    return () => ipcRenderer.removeListener('hive:rateLimitWarning', listener);
+  },
+  /** FallbackModel event when MAX_RETRIES consecutive 429s trigger auto-failover. */
+  onHiveFallbackModel: (
+    cb: (e: { agentId: string; originalModel: string; fallbackModel: string; reason: string }) => void
+  ): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: { agentId: string; originalModel: string; fallbackModel: string; reason: string }) => cb(payload);
+    ipcRenderer.on('hive:fallbackModel', listener);
+    return () => ipcRenderer.removeListener('hive:fallbackModel', listener);
+  },
   onHiveMessage: (cb: (e: HiveRouteEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: HiveRouteEvent) => cb(payload);
     ipcRenderer.on('hive:message', listener);
@@ -921,7 +944,7 @@ const api = {
    *  links, links that arrived during load). Resolves the queued list. */
   drainPendingHires: (): Promise<HireManifest[]> =>
     ipcRenderer.invoke('hire:drainPending'),
-  /** Open a multi-file picker and validate every selected hire manifest. */
+  /** Open a multi-file picker and validate every selected hire manifest or markdown persona. */
   importHireFiles: (): Promise<{
     ok: boolean;
     manifests: HireManifest[];
@@ -929,6 +952,21 @@ const api = {
     error?: string;
   }> =>
     ipcRenderer.invoke('hire:openFile'),
+  /** Scan global ~/.claude/agents and project .claude/agents for custom agent definitions. */
+  listGlobalClaudeAgents: (projectCwd?: string): Promise<{
+    agents: Array<{ path: string; filename: string; manifest: HireManifest }>;
+    errors: string[];
+  }> =>
+    ipcRenderer.invoke('hire:listGlobalClaudeAgents', projectCwd),
+  /** Autonomously spawn a parallel worker agent in an isolated Git worktree. */
+  autoSpawnWorker: (opts: { role: string; goal: string; cwd: string }): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('hive:autoSpawn', opts),
+  /** Route an image attachment through Vision Bridge to convert image to detailed text description. */
+  describeImage: (imagePath: string): Promise<{ ok: boolean; text?: string; error?: string }> =>
+    ipcRenderer.invoke('composer:describeImage', imagePath),
+  /** Append a learned lesson / mistake prevention rule to hive lessons.md */
+  appendLesson: (agentId: string, lessonText: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('hive:appendLesson', agentId, lessonText),
 
   // ─── Quit confirmation ───────────────────────────────────────────────────
   onCloseRequested: (cb: (info: { ptyCount: number }) => void): (() => void) => {

@@ -525,7 +525,7 @@ export class PtyManager {
 
   spawn(opts: SpawnOptions, owner: WebContents | null = null): { ok: boolean; error?: string } {
     if (this.sessions.has(opts.id)) {
-      return { ok: false, error: `pty already exists for id ${opts.id}` };
+      try { this.kill(opts.id); } catch { /* best-effort cleanup before respawn */ }
     }
     // Defense-in-depth: cwd is already tilde-expanded at ingestion (spawnAgentCore),
     // but any other caller reaching the PTY directly gets the same treatment —

@@ -3,7 +3,7 @@
  * pure function: this exact translation silently killed real workers for days
  * while reporting success, which is what earned it a unit test.
  */
-import { autoModeFlagForProvider, inferAgentProvider } from '../shared/agentProvider';
+import { autoModeFlagForProvider, inferAgentProvider, normalizeAgentProvider, defaultCommandForProvider } from '../shared/agentProvider';
 import { tokenizeCommand } from '../shared/commandLine';
 
 export interface WorkerLaunch {
@@ -25,10 +25,18 @@ export function buildWorkerLaunch(opts: {
   /** The app's auto (skip-permissions) setting. */
   autoMode: boolean;
 }): WorkerLaunch {
-  let command =
+  // If god explicitly provides a provider (but no full command), use that provider's
+  // default command as the base. Only fall back to config.defaultCommand when NO
+  // provider is specified. This fixes: god writes provider=opencode, model=local/...
+  // but command defaults to 'claude' → spawned claude with opencode model flag.
+  const explicitProvider = normalizeAgentProvider(opts.requestProvider);
+  const baseCommand =
     typeof opts.requestCommand === 'string' && opts.requestCommand.trim()
       ? opts.requestCommand.trim()
-      : (opts.defaultCommand ?? 'claude');
+      : explicitProvider
+        ? defaultCommandForProvider(explicitProvider)
+        : (opts.defaultCommand ?? 'claude');
+  let command = baseCommand;
   // Inherit the app's auto (skip-permissions) mode when the request takes no
   // stance of its own: a headless worker has no human to click through tool
   // prompts, so without the flag it stalls at the first ask until the idle

@@ -8,6 +8,8 @@ const MAIN_ASSETS = [
   ['src/main/slack-trigger.cjs', 'out/main/slack-trigger.cjs'],
   // Knowledge Graph core (pure-JS, no native deps) — required by knowledge.ts.
   ['src/main/kg-core.cjs', 'out/main/kg-core.cjs'],
+  // Proxy bridge sidecar for hookless CLIs (qwen) — built from PROXY_BRIDGE_SHIM in hive.ts
+  ['bin/hive-proxy.cjs', 'out/main/hive-proxy.cjs'],
 ];
 
 for (const [fromRel, toRel] of MAIN_ASSETS) {

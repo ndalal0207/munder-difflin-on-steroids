@@ -121,6 +121,8 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   const host = document.createElement('div');
   host.style.width = '100%';
   host.style.height = '100%';
+  host.style.overflow = 'hidden'; /* contain the xterm viewport */
+  host.style.position = 'relative'; /* for absolute positioned xterm-viewport */
 
   const term = new Terminal({
     theme,

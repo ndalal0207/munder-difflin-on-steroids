@@ -11,11 +11,13 @@ import {
   type HarnessConfig,
   AGENT_PROVIDER_PRESETS,
   buildSpawnCommand,
+  tokenizeCommand,
   modelsForProvider,
   inferAgentProvider,
   providerPreset,
   isClaudeProvider
 } from '@/store/config';
+import { acquireTerminal, disposeTerminal, resetTerminal } from '@/components/terminalPool';
 
 const ACCENTS: AccentColorName[] = ['coral', 'mint', 'sky', 'lemon', 'lilac', 'peach'];
 
@@ -60,35 +62,83 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
 
   const pickProvider = (id: AgentProvider) => {
     setProvider(id);
-    if (!config) {
-      setModel(undefined);
-      return;
-    }
-    const nextModel = isClaudeProvider(id) ? config.defaultModel : config.providerDefaultModels?.[id];
+    const activeConfig: Pick<HarnessConfig, 'defaultCommand' | 'autoMode' | 'defaultModel' | 'providerDefaultModels'> = config ?? {
+      defaultCommand: 'claude',
+      autoMode: true,
+      defaultModel: 'claude-3-7-sonnet',
+      providerDefaultModels: {}
+    };
+    const nextModel = isClaudeProvider(id) ? activeConfig.defaultModel : activeConfig.providerDefaultModels?.[id];
     setModel(nextModel);
   };
 
   const preset = providerPreset(provider);
 
-  const save = () => {
-    const trimmedName = name.trim() || agent.name;
-    const trimmedDescription = description.trim() || 'a fresh harness';
-    const trimmedGoal = goal.trim();
-    const command = config
-      ? buildSpawnCommand(config, model, provider)
-      : agent.command;
+  const save = async () => {
+    try {
+      const trimmedName = name.trim() || agent.name;
+      const trimmedDescription = description.trim() || 'a fresh harness';
+      const trimmedGoal = goal.trim();
 
-    updateAgent(agent.id, {
-      name: trimmedName,
-      character,
-      accent,
-      provider,
-      model,
-      command,
-      description: trimmedDescription,
-      goal: trimmedGoal || undefined
-    });
-    onClose();
+      const activeConfig = config ?? { defaultCommand: 'claude', autoMode: true };
+      const command = buildSpawnCommand(activeConfig, model, provider);
+
+      const oldProvider = inferAgentProvider(agent.command, agent.provider);
+      const modelOrProviderChanged =
+        agent.model !== model || oldProvider !== provider || (agent.command ?? '').trim() !== command.trim();
+
+      if (modelOrProviderChanged && window.cth?.appendLesson) {
+        const oldEngine = `${oldProvider} (${agent.model ?? 'default'})`;
+        const newEngine = `${provider} (${model ?? 'default'})`;
+        const lessonNote = `[ENGINE SWITCH]: Switched model from ${oldEngine} to ${newEngine}. Session memory, task ledger, and lessons.md preserved.`;
+        void window.cth.appendLesson(agent.id, lessonNote).catch(() => {});
+      }
+
+      updateAgent(agent.id, {
+        name: trimmedName,
+        character,
+        accent,
+        provider,
+        model,
+        command,
+        description: trimmedDescription,
+        goal: trimmedGoal || undefined
+      });
+
+      // If engine/model changed on an active PTY, kill the old process and launch the new one live!
+      if (modelOrProviderChanged && agent.ptyId) {
+        await window.cth.killPty(agent.ptyId).catch(() => {});
+        disposeTerminal(agent.ptyId);
+        acquireTerminal(agent.ptyId);
+        updateAgent(agent.id, {
+          terminalGeneration: (agent.terminalGeneration ?? 0) + 1
+        });
+        const [exe, ...args] = tokenizeCommand(command.trim());
+        await window.cth.spawnPty({
+          id: agent.ptyId,
+          cwd: agent.cwd,
+          command: exe,
+          args,
+          provider,
+          cols: 100,
+          rows: 30,
+          hive: {
+            id: agent.id,
+            name: trimmedName,
+            cwd: agent.cwd,
+            provider,
+            isGod: agent.isGod,
+            isAssistant: agent.isAssistant,
+            role: trimmedDescription,
+            goal: trimmedGoal || undefined
+          }
+        }).catch((err) => console.error('[EditAgentModal] live respawn failed:', err));
+      }
+    } catch (e) {
+      console.error('[EditAgentModal] save error:', e);
+    } finally {
+      onClose();
+    }
   };
 
   return (

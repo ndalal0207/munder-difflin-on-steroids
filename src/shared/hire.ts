@@ -79,6 +79,10 @@ export interface HireManifest {
    *  pre-filled; write/secret ids are surfaced for human consent at import
    *  and never auto-enabled. */
   mcpServers?: string[];
+  /** Markdown persona / custom instructions for the agent (injected into identity.md). */
+  persona?: string;
+  /** Optional custom system prompt. */
+  systemPrompt?: string;
 }
 
 export interface HireValidation {
@@ -308,13 +312,128 @@ export function validateHireManifest(raw: unknown): HireValidation {
 
   if (homepage && !homepage.startsWith('https://')) errors.push('"homepage" must be https');
 
+  const persona = capped(o.persona, 32768, 'persona', errors);
+  const systemPrompt = capped(o.systemPrompt, 32768, 'systemPrompt', errors);
+
   if (errors.length > 0 || !name) return { ok: false, errors };
   return {
     ok: true,
     errors: [],
     consentRequired: consentRequired.length > 0 ? consentRequired : undefined,
-    manifest: { spec: HIRE_SPEC_V1, name, description, goal, character, accent, provider, model, commandFlags, capabilities, isolate, tokenCap, author, homepage, skills, mcpServers }
+    manifest: { spec: HIRE_SPEC_V1, name, description, goal, character, accent, provider, model, commandFlags, capabilities, isolate, tokenCap, author, homepage, skills, mcpServers, persona, systemPrompt }
   };
+}
+
+/**
+ * Parse a Markdown agent definition / persona file (e.g. from ~/.claude/agents/*.md).
+ * Supports YAML frontmatter (name, description/role, model, tools/capabilities)
+ * and markdown body (persona / instructions / goal).
+ */
+export function parseMarkdownAgent(rawContent: string, filename?: string): HireValidation {
+  const content = rawContent.trim();
+  if (!content) return { ok: false, errors: ['Markdown content is empty'] };
+
+  let frontmatterBlock = '';
+  let body = content;
+
+  // Check for YAML frontmatter
+  if (content.startsWith('---')) {
+    const endIdx = content.indexOf('\n---', 3);
+    if (endIdx !== -1) {
+      frontmatterBlock = content.slice(3, endIdx).trim();
+      body = content.slice(endIdx + 4).trim();
+    }
+  }
+
+  const rawManifest: Record<string, unknown> = {
+    spec: HIRE_SPEC_V1
+  };
+
+  // Parse simple YAML key-values from frontmatter
+  if (frontmatterBlock) {
+    const lines = frontmatterBlock.split('\n');
+    let currentKey = '';
+    let currentList: string[] = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      if (trimmed.startsWith('- ') && currentKey) {
+        currentList.push(trimmed.slice(2).trim());
+        rawManifest[currentKey] = currentList;
+        continue;
+      }
+
+      const colonIdx = trimmed.indexOf(':');
+      if (colonIdx > 0) {
+        currentKey = trimmed.slice(0, colonIdx).trim();
+        const val = trimmed.slice(colonIdx + 1).trim();
+        currentList = [];
+        if (val.startsWith('[') && val.endsWith(']')) {
+          rawManifest[currentKey] = val
+            .slice(1, -1)
+            .split(',')
+            .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+            .filter(Boolean);
+        } else if (val) {
+          rawManifest[currentKey] = val.replace(/^['"]|['"]$/g, '');
+        }
+      }
+    }
+  }
+
+  // Derive Name — truncate to 40-char cap
+  if (!rawManifest.name) {
+    const h1Match = body.match(/^#\s+(.+)$/m);
+    if (h1Match) {
+      rawManifest.name = h1Match[1].trim().slice(0, 40);
+    } else if (filename) {
+      const base = filename.replace(/\.(md|markdown|json)$/i, '').replace(/[-_]+/g, ' ').trim();
+      rawManifest.name = base.replace(/\b\w/g, (l) => l.toUpperCase()).slice(0, 40);
+    } else {
+      rawManifest.name = 'Custom Agent';
+    }
+  } else if (typeof rawManifest.name === 'string') {
+    rawManifest.name = rawManifest.name.slice(0, 40);
+  }
+
+  // Derive Description / Role — truncate to 200-char cap
+  if (!rawManifest.description) {
+    const descMatch = body.match(/^##\s+(?:Role|Description|About)\s*\n+([^#\n]+)/im);
+    if (descMatch) {
+      rawManifest.description = descMatch[1].trim().slice(0, 200);
+    }
+  } else if (typeof rawManifest.description === 'string') {
+    rawManifest.description = rawManifest.description.slice(0, 200);
+  }
+
+  // Derive Goal — truncate to 4000-char cap
+  if (!rawManifest.goal) {
+    const goalMatch = body.match(/^##\s+(?:Goal|Mission|Objective)\s*\n+([^#]+)/im);
+    if (goalMatch) {
+      rawManifest.goal = goalMatch[1].trim().slice(0, 4000);
+    } else {
+      rawManifest.goal = body.slice(0, 4000).trim();
+    }
+  } else if (typeof rawManifest.goal === 'string') {
+    rawManifest.goal = rawManifest.goal.slice(0, 4000);
+  }
+
+  // Attach Persona (full body, no cap — persona field allows 32768 chars)
+  rawManifest.persona = body.trim() || undefined;
+
+  // Map tools -> capabilities if present.
+  // Handles both YAML list (Array) and comma-separated string: "Read, Write, Edit, Bash"
+  if (!rawManifest.capabilities) {
+    const rawTools = rawManifest.tools;
+    if (Array.isArray(rawTools)) {
+      rawManifest.capabilities = rawTools.map(String).map((s) => s.trim()).filter(Boolean);
+    } else if (typeof rawTools === 'string' && rawTools.trim()) {
+      rawManifest.capabilities = rawTools.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+  }
+
+  return validateHireManifest(rawManifest);
 }
 
 /** Parse a `munderdifflin://hire?src=<https-url>` deep link. Returns the https

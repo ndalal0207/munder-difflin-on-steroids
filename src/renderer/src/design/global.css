@@ -198,6 +198,39 @@ canvas, img, svg { image-rendering: pixelated; image-rendering: crisp-edges; }
   font-feature-settings: "liga" 0, "clig" 0, "calt" 0 !important;
 }
 
+/* Ensure xterm viewport is scrollable and scrollbar is visible */
+.xterm .xterm-viewport {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 12px !important;
+  height: 12px !important;
+  display: block !important;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: var(--cth-paper-200) !important;
+  border-radius: 6px !important;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--cth-ink-300) !important;
+  border-radius: 6px !important;
+  min-height: 40px !important;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--cth-ink-500) !important;
+}
+
+.xterm .xterm-viewport {
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--cth-ink-300) var(--cth-paper-200) !important;
+}
+
 /* ─── Markdown preview (v0.3.4) ──────────────────────────────────────────────
    Shared by the IDE split/preview view and the fullscreen file overlay. All
    colors ride the tokens, so light + dark themes come for free. */

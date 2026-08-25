@@ -2726,6 +2726,8 @@ export default HiveBridge;
 // citizen. NEVER logs bodies or keys; the captured body is parsed in-memory and
 // dropped. Idle is heuristic: a turn that ends with no tool call and no new request
 // within an ~800ms debounce → Stop (a new request cancels it).
+// Includes exponential backoff + jitter for 429/5xx errors with Retry-After header support.
+// Emits RateLimitWarning events so orchestrator can track and trigger fallback models.
 const PROXY_BRIDGE_SHIM = `#!/usr/bin/env node
 'use strict';
 const http = require('http');
@@ -2738,6 +2740,11 @@ const AGENT_ID = process.env.AGENT_ID || null;
 const UPSTREAM = process.env.UPSTREAM_BASE_URL || '';
 const SESSION = process.env.HIVE_PROXY_SESSION || null;
 const API = process.env.HIVE_PROXY_API === 'anthropic' ? 'anthropic' : 'openai';
+const MODEL = process.env.HIVE_PROXY_MODEL || '';
+const MAX_RETRIES = parseInt(process.env.HIVE_PROXY_MAX_RETRIES || '3', 10);
+const BASE_DELAY_MS = parseInt(process.env.HIVE_PROXY_BASE_DELAY_MS || '1000', 10);
+const MAX_DELAY_MS = parseInt(process.env.HIVE_PROXY_MAX_DELAY_MS || '30000', 10);
+const JITTER_FACTOR = parseFloat(process.env.HIVE_PROXY_JITTER_FACTOR || '0.3');
 
 function trimSlash(s) { while (s.length && s.charAt(s.length - 1) === '/') s = s.slice(0, -1); return s; }
 
@@ -2887,6 +2894,23 @@ function parseAndEmit(bodyStr, isSse) {
 let upstreamUrl = null;
 try { upstreamUrl = new URL(UPSTREAM); } catch (e) {}
 
+// Exponential backoff with jitter for 429/5xx errors
+function calculateDelay(attempt, retryAfterHeader) {
+  if (retryAfterHeader) {
+    const retryAfterSec = parseInt(retryAfterHeader, 10);
+    if (!isNaN(retryAfterSec) && retryAfterSec > 0) {
+      return retryAfterSec * 1000;
+    }
+  }
+  const expDelay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt), MAX_DELAY_MS);
+  const jitter = expDelay * JITTER_FACTOR * Math.random();
+  return Math.floor(expDelay + jitter);
+}
+
+function shouldRetry(statusCode) {
+  return statusCode === 429 || statusCode >= 500;
+}
+
 const server = http.createServer(function (req, res) {
   cancelStop(); // a new request means the turn is still going
   if (!upstreamUrl) { res.statusCode = 502; res.end('proxy: no upstream'); return; }
@@ -2907,27 +2931,80 @@ const server = http.createServer(function (req, res) {
     path: target.pathname + target.search,
     headers: headers
   };
-  const upReq = lib.request(opts, function (upRes) {
-    res.writeHead(upRes.statusCode || 502, upRes.headers);
-    const ct = String((upRes.headers['content-type'] || ''));
-    const wantParse = ct.indexOf('json') !== -1 || ct.indexOf('event-stream') !== -1;
-    const isSse = ct.indexOf('event-stream') !== -1;
-    const chunks = [];
-    let total = 0;
-    upRes.on('data', function (chunk) {
-      res.write(chunk); // stream straight through to the CLI
-      if (wantParse && total < 4194304) { chunks.push(chunk); total += chunk.length; }
-    });
-    upRes.on('end', function () {
-      res.end();
-      if (wantParse && chunks.length) {
-        try { parseAndEmit(Buffer.concat(chunks).toString('utf8'), isSse); } catch (e) {}
+  let reqBody = '';
+  req.on('data', (d) => { reqBody += d; });
+  req.on('end', async function () {
+    const makeRequest = (attempt) => new Promise((resolve, reject) => {
+      const upReq = lib.request(opts, function (upRes) {
+        const statusCode = upRes.statusCode || 502;
+        const retryAfter = upRes.headers['retry-after'];
+
+        if (shouldRetry(statusCode) && attempt < MAX_RETRIES) {
+          const delay = calculateDelay(attempt, retryAfter);
+          const isRateLimit = statusCode === 429;
+          
+          // Emit a warning event to the hive so the orchestrator can track rate limits
+          emit({ 
+            hook_event_name: 'RateLimitWarning', 
+            agent_id: AGENT_ID, 
+            session_id: SESSION,
+            attempt: attempt + 1,
+            maxRetries: MAX_RETRIES,
+            statusCode,
+            delayMs: delay,
+            isRateLimit,
+            upstream: UPSTREAM,
+            model: MODEL
+          });
+
+          setTimeout(() => {
+            makeRequest(attempt + 1).then(resolve).catch(reject);
+          }, delay);
+          return;
+        }
+
+        // Success or non-retryable error or max retries exceeded
+        const chunks = [];
+        let total = 0;
+        const ct = String((upRes.headers['content-type'] || ''));
+        const wantParse = ct.indexOf('json') !== -1 || ct.indexOf('event-stream') !== -1;
+        const isSse = ct.indexOf('event-stream') !== -1;
+
+        upRes.on('data', function (chunk) {
+          res.write(chunk);
+          if (wantParse && total < 4194304) { chunks.push(chunk); total += chunk.length; }
+        });
+
+        upRes.on('end', function () {
+          res.end();
+          if (wantParse && chunks.length) {
+            try { parseAndEmit(Buffer.concat(chunks).toString('utf8'), isSse); } catch (e) {}
+          }
+          resolve();
+        });
+
+        upRes.on('error', function () { try { res.end(); } catch (e) {} resolve(); });
+      });
+
+      upReq.on('error', function () { 
+        try { res.statusCode = 502; res.end('proxy: upstream error'); } catch (e) {} 
+        reject(new Error('upstream connection error'));
+      });
+
+      if (reqBody) {
+        upReq.write(reqBody);
       }
+      upReq.end();
     });
-    upRes.on('error', function () { try { res.end(); } catch (e) {} });
+    
+    try {
+      await makeRequest(0);
+    } catch (e) {
+      if (!res.writableEnded) {
+        try { res.statusCode = 502; res.end('proxy: upstream error after retries'); } catch (e2) {}
+      }
+    }
   });
-  upReq.on('error', function () { try { res.statusCode = 502; res.end('proxy: upstream error'); } catch (e) {} });
-  req.pipe(upReq);
 });
 
 server.on('error', function () {

@@ -128,6 +128,32 @@ export function App() {
   // Quit warning subscription
   useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);
 
+  // Global Keyboard Shortcuts (Cmd+K -> Michael / Command Center, Cmd+N -> Add Agent, Cmd+, -> Settings)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'k') {
+        e.preventDefault();
+        const allAgents = useStore.getState().agents;
+        const michael = allAgents.find((a) => a.isGod || a.name.toLowerCase().includes('michael'));
+        if (michael) {
+          useStore.getState().select(michael.id);
+        }
+      } else if (key === 'n') {
+        e.preventDefault();
+        setAddAgentOpen(true);
+      } else if (key === ',') {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [setAddAgentOpen, setSettingsOpen]);
+
   // Shareable hires: a validated manifest arriving via the munderdifflin://
   // deep link (or file import) pre-fills the Add-Agent modal. Never spawns by itself.
   const enqueuePendingHires = useStore(s => s.enqueuePendingHires);

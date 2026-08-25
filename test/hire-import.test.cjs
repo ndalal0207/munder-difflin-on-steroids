@@ -108,3 +108,61 @@ test('Command Center sets and clears one cap through the atomic IPC', () => {
   assert.match(capFlow, /window\.cth\.setAgentTokenCap\(id, tokens\)/);
   assert.doesNotMatch(capFlow, /updateConfig\(\{\s*agentTokenCaps/);
 });
+
+test('markdown agent definition with frontmatter is parsed into a rich hire manifest', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'md-agent-import-'));
+  try {
+    const mdFile = join(dir, 'security-auditor.md');
+    const mdContent = `---
+name: Security Auditor
+description: Application security specialist
+model: claude-sonnet-4-6
+tools: [Read, Write, Edit, Bash]
+---
+
+# Security Auditor Persona
+You are a senior security researcher and ethical hacker.
+Always verify inputs, check for SQL injection, XSS, and CSRF vulnerabilities.
+`;
+    writeFileSync(mdFile, mdContent, 'utf8');
+
+    const result = readHireManifestFiles([mdFile]);
+    assert.equal(result.manifests.length, 1);
+    const m = result.manifests[0];
+    assert.equal(m.name, 'Security Auditor');
+    assert.equal(m.description, 'Application security specialist');
+    assert.equal(m.model, 'claude-sonnet-4-6');
+    assert.deepEqual(m.capabilities, ['Read', 'Write', 'Edit', 'Bash']);
+    assert.ok(m.persona);
+    assert.match(m.persona, /senior security researcher/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pure markdown file without frontmatter extracts name and persona', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'md-agent-plain-'));
+  try {
+    const mdFile = join(dir, 'code-reviewer.md');
+    const mdContent = `# Code Reviewer
+
+## Role
+Senior PR and code quality reviewer.
+
+## Instructions
+Review all code changes thoroughly. Look for clean abstractions and test coverage.
+`;
+    writeFileSync(mdFile, mdContent, 'utf8');
+
+    const result = readHireManifestFiles([mdFile]);
+    assert.equal(result.manifests.length, 1);
+    const m = result.manifests[0];
+    assert.equal(m.name, 'Code Reviewer');
+    assert.equal(m.description, 'Senior PR and code quality reviewer.');
+    assert.ok(m.persona);
+    assert.match(m.persona, /Review all code changes thoroughly/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

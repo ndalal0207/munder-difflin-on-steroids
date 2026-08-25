@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "theme": "system",
+  "autoupdate": false,
+  "provider": {
+    "local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local",
+      "options": { "baseURL": "http://localhost:20128/v1" },
+      "models": {
+        "hy3-free": {},
+        "auto/best-coding": {},
+        "auto/best-fast": {},
+        "auto/best-vision": {}
+      }
+    }
+  },
+  "permission": { "edit": "allow", "bash": "allow", "webfetch": "allow" }
+}

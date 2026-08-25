@@ -12,7 +12,9 @@ import { paintPortrait, sceneFrameBufs, SCENE_W, SCENE_H } from './portraitArt';
 export type OfficeCharacterName =
   | 'michael' | 'jim' | 'pam' | 'dwight' | 'kevin' | 'angela'
   | 'oscar' | 'stanley' | 'phyllis' | 'andy' | 'kelly' | 'ryan'
-  | 'toby' | 'creed' | 'meredith';
+  | 'toby' | 'creed' | 'meredith' | 'darryl' | 'erin' | 'jan'
+  | 'david' | 'gabe' | 'karen' | 'holly' | 'mose' | 'robert'
+  | 'packer' | 'clark' | 'pete' | 'roy';
 
 export interface CastMember {
   name: OfficeCharacterName;
@@ -40,6 +42,19 @@ export const OFFICE_CAST: CastMember[] = [
   { name: 'toby',     displayName: 'Toby',     shirt: '#9a8c5a', blurb: 'Human resources' },
   { name: 'creed',    displayName: 'Creed',    shirt: '#6b7a4b', blurb: 'Quality assurance' },
   { name: 'meredith', displayName: 'Meredith', shirt: '#b5544a', blurb: 'Supplier relations' },
+  { name: 'darryl',   displayName: 'Darryl',   shirt: '#4a5d6e', blurb: 'Warehouse foreman, logistics' },
+  { name: 'erin',     displayName: 'Erin',     shirt: '#5fb398', blurb: 'Receptionist, optimism' },
+  { name: 'jan',      displayName: 'Jan',      shirt: '#8e44ad', blurb: 'VP of sales, Serenity by Jan' },
+  { name: 'david',    displayName: 'David',    shirt: '#2c3e50', blurb: 'CFO, Suck It inventor' },
+  { name: 'gabe',     displayName: 'Gabe',     shirt: '#7f8c8d', blurb: 'Sabre director, cinema enthusiast' },
+  { name: 'karen',    displayName: 'Karen',    shirt: '#4a6572', blurb: 'Sales, Utica branch manager' },
+  { name: 'holly',    displayName: 'Holly',    shirt: '#e67e22', blurb: 'Human resources, Yoda impressions' },
+  { name: 'mose',     displayName: 'Mose',     shirt: '#6e4a2e', blurb: 'Beet farmer, sprint champion' },
+  { name: 'robert',   displayName: 'Robert',   shirt: '#212f3d', blurb: 'CEO, The Lizard King' },
+  { name: 'packer',   displayName: 'Packer',   shirt: '#922b21', blurb: 'Traveling sales, prankster' },
+  { name: 'clark',    displayName: 'Clark',    shirt: '#5b7065', blurb: 'Junior sales, Dwight Jr.' },
+  { name: 'pete',     displayName: 'Pete',     shirt: '#4682b4', blurb: 'Customer service, Plop' },
+  { name: 'roy',      displayName: 'Roy',      shirt: '#3d4852', blurb: 'Warehouse, gravel company founder' },
 ];
 
 export const CAST_BY_NAME: Record<OfficeCharacterName, CastMember> =

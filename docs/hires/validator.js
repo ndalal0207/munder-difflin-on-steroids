@@ -12,7 +12,8 @@ window.HireSpec = (function () {
   // (mirror of MODEL_RE in the app's src/shared/hire.ts).
   const MODEL_RE = /^[A-Za-z0-9 ._()[\]\/:@+-]{1,80}$/;
   const CAST = ['michael', 'jim', 'pam', 'dwight', 'kevin', 'angela', 'oscar', 'stanley',
-    'phyllis', 'andy', 'kelly', 'ryan', 'toby', 'creed', 'meredith'];
+    'phyllis', 'andy', 'kelly', 'ryan', 'toby', 'creed', 'meredith',
+    'darryl', 'erin', 'jan', 'david', 'gabe', 'karen', 'holly', 'mose', 'robert', 'packer', 'clark', 'pete', 'roy'];
   const ACCENTS = ['coral', 'mint', 'sky', 'lemon', 'lilac', 'peach'];
 
   function normalizeProvider(p) { return p === 'agy' ? 'antigravity' : p; }

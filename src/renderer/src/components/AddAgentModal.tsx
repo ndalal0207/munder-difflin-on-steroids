@@ -229,6 +229,8 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   };
   const preset = providerPreset(provider);
   const [goal, setGoal] = useState(pendingHire?.goal ?? '');
+  const [persona, setPersona] = useState(pendingHire?.persona ?? '');
+  const [globalClaudeAgents, setGlobalClaudeAgents] = useState<Array<{ path: string; filename: string; manifest: HireManifest }>>([]);
   const [isolate, setIsolate] = useState(pendingHire?.isolate ?? false);
   // #2 — optional Claude session id to continue. When set, the spawn seeds that
   // session's transcript into the cwd's project dir and launches `--resume`.
@@ -250,6 +252,15 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       setTimeout(() => setCopiedPrompt(false), 1500);
     } catch { /* clipboard blocked — the textarea below is selectable as a fallback */ }
   };
+
+  // Scan for custom Claude agents in ~/.claude/agents and project .claude/agents
+  useEffect(() => {
+    window.cth?.listGlobalClaudeAgents?.(cwd)
+      .then((res) => {
+        if (res?.agents) setGlobalClaudeAgents(res.agents);
+      })
+      .catch(() => {});
+  }, [cwd]);
 
   // Close only the modal on Esc. Capture prevents the fullscreen terminal's
   // window-level handler from also closing the view underneath.
@@ -336,11 +347,20 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     // matching avatar rather than the Jim default (issue #191).
     setCharacter(m.character ? knownCharacter(m.character) : (characterForName(m.name ?? '') ?? knownCharacter(undefined)));
     setAccent(knownAccent(m.accent));
-    setProvider(m.provider ?? initialProvider);
+    
+    // Preserve current user-selected provider if manifest omits provider
+    const targetProvider = m.provider ?? provider ?? initialProvider;
+    setProvider(targetProvider);
     setModel(m.model);
-    setCommand(hireCommand(m));
+    
+    // Build command for target provider
+    const baseCmd = buildSpawnCommand(config, m.model, targetProvider);
+    const finalCmd = m.commandFlags?.length ? `${baseCmd} ${m.commandFlags.join(' ')}` : baseCmd;
+    setCommand(finalCmd);
+
     setDescription(m.description ?? 'a fresh harness');
     setGoal(m.goal ?? '');
+    setPersona(m.persona ?? '');
     setIsolate(m.isolate ?? false);
     setResumeSessionId('');
     setFolderNote(undefined);
@@ -371,6 +391,25 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
     if (res.errors.length > 0) {
       const noun = res.errors.length === 1 ? 'file' : 'files';
       setError(`Skipped ${res.errors.length} invalid ${noun}: ${res.errors.join(' · ')}`);
+    } else if (!res.ok && res.error && res.error !== 'cancelled') {
+      setError(res.error);
+    }
+  };
+
+  /** Open a .md file picker and populate the Persona & Instructions textarea from the file content,
+   *  also applying the parsed manifest fields if valid. */
+  const importPersonaFile = async () => {
+    setError(undefined);
+    const res = await window.cth.importHireFiles();
+    if (res.manifests.length > 0) {
+      const m = res.manifests[0];
+      if (m.persona) setPersona(m.persona);
+      if (m.name && m.name !== 'Custom Agent') setName(m.name);
+      if (m.description) setDescription(m.description);
+      if (m.goal) setGoal(m.goal);
+      if (m.model) setModel(m.model);
+    } else if (res.errors.length > 0) {
+      setError(`Could not parse file: ${res.errors[0]}`);
     } else if (!res.ok && res.error && res.error !== 'cancelled') {
       setError(res.error);
     }
@@ -418,6 +457,8 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
         provider,
         cwd,
         role: description.trim() || undefined,
+        persona: persona.trim() || undefined,
+        goal: goal.trim() || undefined,
         // A hire manifest may carry validated capability tags (routing hints).
         capabilities: hireMeta?.capabilities
       }
@@ -1048,6 +1089,63 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                       </div>
                     </Row>
 
+                    {globalClaudeAgents.length > 0 && (
+                      <Row label="Claude Agents">
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {globalClaudeAgents.map((a) => (
+                            <button
+                              key={a.path}
+                              onClick={() => applyManifest(a.manifest)}
+                              title={`From ${a.filename}: ${a.manifest.description || a.manifest.goal || ''}`}
+                              style={{
+                                padding: '3px 8px 1px',
+                                background: 'var(--cth-lemon-light)',
+                                boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                                fontFamily: 'var(--cth-font-ui)',
+                                fontSize: 12,
+                                fontWeight: 600,
+                                color: 'var(--cth-ink-900)',
+                                cursor: 'pointer',
+                                border: 'none'
+                              }}
+                            >
+                              📁 {a.manifest.name || a.filename}
+                            </button>
+                          ))}
+                        </div>
+                      </Row>
+                    )}
+
+                    <Row label="AI Engine / CLI">
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {AGENT_PROVIDER_PRESETS.map((p) => {
+                          const active = provider === p.id;
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => pickProvider(p.id)}
+                              style={{
+                                padding: '4px 10px',
+                                background: active ? 'var(--cth-lemon-light)' : 'var(--cth-cream-100)',
+                                boxShadow: active
+                                  ? 'inset 0 0 0 1.5px var(--cth-ink-900)'
+                                  : 'inset 0 0 0 1px var(--cth-ink-200)',
+                                fontFamily: 'var(--cth-font-ui)',
+                                fontSize: 12,
+                                fontWeight: active ? 700 : 500,
+                                color: 'var(--cth-ink-900)',
+                                cursor: 'pointer',
+                                border: 'none'
+                              }}
+                            >
+                              {p.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </Row>
+
                     <Row label="Role">
                       <input
                         value={description}
@@ -1064,6 +1162,79 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         placeholder="long-running directive injected on every prompt"
                         rows={2}
                         style={{ ...inputStyle, fontFamily: 'var(--cth-font-ui)', resize: 'none' }}
+                      />
+                    </Row>
+
+                    <Row label="Persona & Instructions">
+                      {/* Toolbar: dropdown of global Claude agents + upload .md button */}
+                      <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (!val) return;
+                            const agent = globalClaudeAgents.find((a) => a.path === val);
+                            if (agent) {
+                              if (agent.manifest.persona) setPersona(agent.manifest.persona);
+                              if (agent.manifest.name && agent.manifest.name !== 'Custom Agent') setName(agent.manifest.name);
+                              if (agent.manifest.description) setDescription(agent.manifest.description);
+                              if (agent.manifest.goal) setGoal(agent.manifest.goal);
+                              if (agent.manifest.model) setModel(agent.manifest.model);
+                            }
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '6px 10px',
+                            background: 'var(--cth-cream-100)',
+                            boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                            fontFamily: 'var(--cth-font-ui)',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: 'var(--cth-ink-900)',
+                            border: 'none',
+                            cursor: 'pointer',
+                            outline: 'none'
+                          }}
+                        >
+                          <option value="" style={{ color: '#333', background: '#fff' }}>
+                            {globalClaudeAgents.length > 0
+                              ? `📂 Pick from ~/.claude/agents (${globalClaudeAgents.length} available)…`
+                              : '📂 No agents in ~/.claude/agents'}
+                          </option>
+                          {globalClaudeAgents.map((a) => (
+                            <option key={a.path} value={a.path} style={{ color: '#111', background: '#fcfbfa', padding: '4px' }}>
+                              📄 {a.manifest.name || a.filename} ({a.filename})
+                              {a.manifest.description ? ` — ${a.manifest.description.slice(0, 60)}…` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={importPersonaFile}
+                          title="Upload a .md persona file from your device"
+                          style={{
+                            padding: '6px 12px',
+                            flexShrink: 0,
+                            background: 'var(--cth-lemon-light)',
+                            boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                            fontFamily: 'var(--cth-font-ui)',
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: 'var(--cth-ink-900)',
+                            cursor: 'pointer',
+                            border: 'none',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          ⬆ Upload .md file…
+                        </button>
+                      </div>
+                      <textarea
+                        value={persona}
+                        onChange={(e) => setPersona(e.target.value)}
+                        placeholder="Paste your persona / system instructions here — or load from the dropdown or upload a .md file above. This is injected verbatim into the agent's identity.md on every session."
+                        rows={10}
+                        style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)', fontSize: 12, resize: 'vertical', minHeight: 180, lineHeight: '1.5' }}
                       />
                     </Row>
                   </>
@@ -1092,7 +1263,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
             }}>
               <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: '17px' }}>
-                  <strong>Import hire</strong> loads a ready-made agent from a <code style={{ fontFamily: 'var(--cth-font-mono)' }}>.json</code> manifest —
+                  <strong>Import hire</strong> loads a ready-made agent or persona from a <code style={{ fontFamily: 'var(--cth-font-mono)' }}>.json</code> or <code style={{ fontFamily: 'var(--cth-font-mono)' }}>.md</code> file (or <code style={{ fontFamily: 'var(--cth-font-mono)' }}>~/.claude/agents</code>) —
                   it fills in every field below for you to review. Nothing spawns until you hit <em>spawn</em>.
                 </span>
                 <button
